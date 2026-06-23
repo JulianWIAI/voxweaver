@@ -4,8 +4,8 @@
         x:Class="Voxweaver.Views.MainWindow"
         x:DataType="vm:MainViewModel"
         Title="Voxweaver"
-        Width="760" Height="640"
-        MinWidth="560" MinHeight="400"
+        WindowState="Maximized"
+        MinWidth="800" MinHeight="500"
         WindowStartupLocation="CenterScreen">
 
   <Window.Styles>
@@ -57,13 +57,12 @@
     <!-- Top bar -->
     <Border Classes="bar" DockPanel.Dock="Top">
       <Grid ColumnDefinitions="Auto,*,Auto,Auto">
-        <!-- Back to drop zone — visible once a file is loaded -->
+        <!-- Always visible: opens file picker for first load or to swap the file -->
         <Button Grid.Column="0"
-                Content="&lt; Change File"
+                Content="Load MIDI"
                 Command="{Binding ChangeFileCommand}"
-                IsVisible="{Binding HasFile}"
                 Margin="0 0 10 0"
-                ToolTip.Tip="Discard current file and load a new one" />
+                ToolTip.Tip="Open a MIDI file" />
 
         <TextBlock Grid.Column="1"
                    Text="Voxweaver" FontSize="16" FontWeight="Bold"
@@ -120,10 +119,7 @@
         <ComboBox ItemsSource="{Binding AvailableTracks}"
                   SelectedItem="{Binding SelectedTrack}"
                   MinWidth="300" />
-        <StackPanel Orientation="Horizontal" Spacing="8">
-          <Button Content="Use this track" Command="{Binding ConfirmTrackCommand}" />
-          <Button Content="&lt; Change File" Command="{Binding ChangeFileCommand}" />
-        </StackPanel>
+        <Button Content="Use this track" Command="{Binding ConfirmTrackCommand}" />
       </StackPanel>
     </Border>
 
@@ -186,11 +182,8 @@
             <TextBlock Text="Drop a MIDI file here"
                        FontSize="22" FontWeight="SemiBold"
                        HorizontalAlignment="Center" />
-            <TextBlock Text="(.mid or .midi)"
+            <TextBlock Text="or use Load MIDI in the toolbar"
                        Opacity="0.6" HorizontalAlignment="Center" />
-            <Button Content="Browse…"
-                    HorizontalAlignment="Center"
-                    Command="{Binding BrowseFileCommand}" />
           </StackPanel>
         </Border>
 

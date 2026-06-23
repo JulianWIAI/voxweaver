@@ -148,10 +148,13 @@ public partial class MainViewModel : ViewModelBase
 
     // ── Navigation: back buttons ─────────────────────────────────────────────
 
-    /// Resets the entire session — user can drop or browse a new MIDI file.
+    /// Opens the file picker and loads a new MIDI, resetting all existing state.
     [RelayCommand]
-    private void ChangeFile()
+    private async Task ChangeFile()
     {
+        var path = await DialogHelper.OpenMidiFileAsync();
+        if (path is null) return;
+
         _parsedMidi = null;
         HasFile = false;
         NeedsTrackSelection = false;
@@ -159,7 +162,10 @@ public partial class MainViewModel : ViewModelBase
         AvailableTracks.Clear();
         SelectedTrack = null;
         Phrases = new ObservableCollection<PhraseViewModel>();
-        StatusMessage = "Drop a .mid or .midi file to get started";
+        AiValidationLog = string.Empty;
+        HasAiValidationIssues = false;
+
+        HandleFileDrop(path);
     }
 
     /// Returns to the track-selector panel so the user can pick a different track.
@@ -181,8 +187,6 @@ public partial class MainViewModel : ViewModelBase
             $"Phrase {i + 1}: {p.NoteCount} note{(p.NoteCount == 1 ? "" : "s")}.");
         var summary = string.Join("\n", lines);
 
-        // Avalonia clipboard is accessed via TopLevel; we surface it via an
-        // event the code-behind subscribes to so the ViewModel stays testable.
         ClipboardCopyRequested?.Invoke(summary);
         StatusMessage = "Summary copied to clipboard.";
     }
@@ -219,16 +223,6 @@ public partial class MainViewModel : ViewModelBase
         {
             IsBusy = false;
         }
-    }
-
-    // ── Browse button (fallback when drag-and-drop is unavailable) ───────────
-
-    [RelayCommand]
-    private async Task BrowseFile()
-    {
-        var path = await DialogHelper.OpenMidiFileAsync();
-        if (path is not null)
-            HandleFileDrop(path);
     }
 
     // ── AI lyric pipeline ────────────────────────────────────────────────────
