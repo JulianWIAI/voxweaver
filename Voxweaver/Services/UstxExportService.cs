@@ -37,8 +37,8 @@ public class UstxExpression
 public class UstxTrack
 {
     public string TrackName { get; set; } = "Track 0";
-    public string Singer { get; set; } = "";
-    public string Phonemizer { get; set; } = "OpenUtau.Core.DefaultPhonemizer";
+    public string Singer { get; set; } = "Bennett";
+    public string Phonemizer { get; set; } = "OpenUtau.Core.Experimental.EnglishG2pPhonemizer";
     public UstxRendererSettings RendererSettings { get; set; } = new();
 }
 
@@ -54,6 +54,15 @@ public class UstxVoicePart
     public int TrackNo { get; set; } = 0;
     public long Position { get; set; } = 0;
     public List<UstxNote> Notes { get; set; } = new();
+    public List<UstxCurve> Curves { get; set; } = new();
+}
+
+public class UstxCurve
+{
+    public string Abbr { get; set; } = "vel";
+    public List<long> Xs { get; set; } = new();
+    public List<int> Ys { get; set; } = new();
+    public bool IsSample { get; set; } = false;
 }
 
 // OpenUtau requires pitch.data (non-empty) + snap_first and a fully-populated vibrato.
@@ -100,8 +109,11 @@ public class UstxVibrato
 public class UstxExportService
 {
     private const int UstxResolution = 480;
+    private const int TimelineScale = 4;    // stretch all positions and durations 4x
+    private const int MinDuration = 480;    // one full beat — minimum for consonant rendering
 
     private readonly G2pService _g2p = new();
+    private readonly Random _rng = new();
 
     public void Export(
         string outputPath,
@@ -119,49 +131,73 @@ public class UstxExportService
             Tracks = new List<UstxTrack> { new UstxTrack { TrackName = "Vocal" } }
         };
 
-        var ustxNotes = new List<UstxNote>();
-
+        // Flatten all phrases into a single ordered list so we can look ahead
+        // to the next note's position when capping duration.
+        var flat = new List<(MidiNote midiNote, string syllable)>();
         foreach (var (phrase, lyrics) in phraseLyricPairs)
         {
             var syllables = _g2p.GetSyllables(lyrics);
-
             for (int i = 0; i < phrase.Notes.Count; i++)
-            {
-                var note = phrase.Notes[i];
-                string lyric = i < syllables.Count ? syllables[i] : "a";
-
-                long ustxPos      = note.TickStart    * UstxResolution / midiTpqn;
-                long ustxDuration = Math.Max(1, note.TickDuration * UstxResolution / midiTpqn);
-
-                ustxNotes.Add(new UstxNote
-                {
-                    Position = ustxPos,
-                    Duration = ustxDuration,
-                    Tone     = note.Pitch,
-                    Lyric    = string.IsNullOrWhiteSpace(lyric) ? "a" : lyric,
-                    // Two anchor points are the minimum OpenUtau requires in pitch.data.
-                    // x values are in milliseconds relative to the note start:
-                    //   -40 ms  = lead-in control point
-                    //     0 ms  = note-on anchor
-                    Pitch = new UstxPitch
-                    {
-                        Data = new List<UstxPitchPoint>
-                        {
-                            new() { X = -40f, Y = 0f, Shape = "l" },
-                            new() { X = 0f,   Y = 0f, Shape = "l" }
-                        },
-                        SnapFirst = true
-                    }
-                });
-            }
+                flat.Add((phrase.Notes[i], i < syllables.Count ? syllables[i] : "a"));
         }
 
-        // Place all notes in one voice part starting at tick 0
+        var ustxNotes = new List<UstxNote>();
+        var velXs     = new List<long>();
+        var velYs     = new List<int>();
+
+        for (int i = 0; i < flat.Count; i++)
+        {
+            var (note, syllable) = flat[i];
+
+            // Stretch position 4x so the whole timeline expands uniformly.
+            long ustxPos = note.TickStart * UstxResolution / midiTpqn * TimelineScale;
+
+            // Stretch duration 4x, then enforce the one-beat minimum.
+            long scaled       = Math.Max(1, note.TickDuration * UstxResolution / midiTpqn * TimelineScale);
+            long ustxDuration = Math.Max(MinDuration, scaled);
+
+            // Cap against the next note's start position to prevent overlap.
+            if (i + 1 < flat.Count)
+            {
+                long nextPos = flat[i + 1].midiNote.TickStart * UstxResolution / midiTpqn * TimelineScale;
+                long gap = nextPos - ustxPos;
+                if (gap > 0)
+                    ustxDuration = Math.Min(ustxDuration, gap - 1);
+            }
+            ustxDuration = Math.Max(1, ustxDuration);
+
+            ustxNotes.Add(new UstxNote
+            {
+                Position = ustxPos,
+                Duration = ustxDuration,
+                Tone     = note.Pitch,
+                Lyric    = string.IsNullOrWhiteSpace(syllable) ? "a" : syllable,
+                // Two anchor points — minimum OpenUtau requires in pitch.data.
+                Pitch = new UstxPitch
+                {
+                    Data = new List<UstxPitchPoint>
+                    {
+                        new() { X = -40f, Y = 0f, Shape = "l" },
+                        new() { X = 0f,   Y = 0f, Shape = "l" }
+                    },
+                    SnapFirst = true
+                }
+            });
+
+            // Velocity: phrase-arch contour (quiet at edges, louder in middle) + jitter.
+            velXs.Add(ustxPos);
+            velYs.Add(HumanizedVelocity(i, flat.Count));
+        }
+
         project.VoiceParts.Add(new UstxVoicePart
         {
-            Name = "Vocal",
+            Name     = "Vocal",
             Position = 0,
-            Notes = ustxNotes
+            Notes    = ustxNotes,
+            Curves   = new List<UstxCurve>
+            {
+                new() { Abbr = "vel", Xs = velXs, Ys = velYs }
+            }
         });
 
         var serializer = new SerializerBuilder()
@@ -169,15 +205,25 @@ public class UstxExportService
             .ConfigureDefaultValuesHandling(DefaultValuesHandling.OmitNull)
             .Build();
 
-        var yaml = serializer.Serialize(project);
-        File.WriteAllText(outputPath, yaml);
+        File.WriteAllText(outputPath, serializer.Serialize(project));
+    }
+
+    // Phrase-arch: sin curve gives ~90 at the first and last notes, ~110 at the midpoint.
+    // A ±5 jitter on top prevents mechanical regularity.
+    private int HumanizedVelocity(int index, int total)
+    {
+        double t       = total > 1 ? (double)index / (total - 1) : 0.5;
+        double arch    = Math.Sin(t * Math.PI);           // 0 → 1 → 0
+        double contour = 90.0 + arch * 20.0;              // 90–110
+        double jitter  = (_rng.NextDouble() - 0.5) * 10; // ±5
+        return Math.Clamp((int)Math.Round(contour + jitter), 85, 115);
     }
 
     private static Dictionary<string, UstxExpression> BuildDefaultExpressions() => new()
     {
-        ["vel"]  = new UstxExpression { Name = "velocity (curve)",         Abbr = "vel",  Min = 0,     Max = 200,  DefaultValue = 100 },
-        ["vol"]  = new UstxExpression { Name = "volume (curve)",            Abbr = "vol",  Min = 0,     Max = 200,  DefaultValue = 100 },
-        ["dyn"]  = new UstxExpression { Name = "dynamics (curve)",          Abbr = "dyn",  Min = -240,  Max = 120,  DefaultValue = 0 },
-        ["pitd"] = new UstxExpression { Name = "pitch deviation (curve)",   Abbr = "pitd", Min = -1200, Max = 1200, DefaultValue = 0 }
+        ["vel"]  = new UstxExpression { Name = "velocity (curve)",       Abbr = "vel",  Min = 0,     Max = 200,  DefaultValue = 100 },
+        ["vol"]  = new UstxExpression { Name = "volume (curve)",          Abbr = "vol",  Min = 0,     Max = 200,  DefaultValue = 100 },
+        ["dyn"]  = new UstxExpression { Name = "dynamics (curve)",        Abbr = "dyn",  Min = -240,  Max = 120,  DefaultValue = 0 },
+        ["pitd"] = new UstxExpression { Name = "pitch deviation (curve)", Abbr = "pitd", Min = -1200, Max = 1200, DefaultValue = 0 }
     };
 }
